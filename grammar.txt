@@ -1,0 +1,8 @@
+ ' | ' = OR 
+ ' * ' = 0 or more of the definition before
+
+expression:     term((PLUS|MINUS) term)*
+
+term:           factor ((MUL|DIV) factor)*
+
+factor:         INT|FLOAT

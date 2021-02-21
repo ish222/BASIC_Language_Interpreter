@@ -1,0 +1,13 @@
+Code for this is inspired by: CodePulse (Youtube)
+Working on making an interpreter for the BASIC programming language. Planning to add more features as we go on (WIP). Simultaneously coding the interpreter using C++ (more challenging due to my lower experience with the language).
+
+First thing we are going to do is make a Lexer class. This will go through the input character by character and break up the text into 'tokens' in the process.
+An example of this could be: input = '123 + 234' => output = [INT:123, PLUS, INT:123]
+It basically classifies all of the input statement into its different types (eg int, float, string, char, operator, etc...)
+
+Crete an error class which will return a relevant error message
+
+Keep track of the line and character numbers while the lexer is running, this is to pinpoint the exact location of where an error came from. This will be useful for multiple line inputs.
+It will also keep track of the file name and file text so we can tell the user exactly which file the error came from in the case of a multifile input.
+
+Create a parser which will create a syntax tree of the program using the tokens created by the lexer
