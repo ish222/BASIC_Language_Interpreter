@@ -1,6 +1,4 @@
 # Imports
-from re import M
-from statistics import median_high
 from string_with_arrows import *
 
 
@@ -91,6 +89,7 @@ T_PLUS = 'PLUS'
 T_MINUS = 'MINUS'
 T_MUL = 'MUL'
 T_DIV = 'DIV'
+T_POWER = 'POWER'  # E.g. 2^3=8
 T_LBRAC = 'LBRAC'
 T_RBRAC = 'RBRAC'
 T_EOF = 'EOF'  # Allows us to detect if we've reached the end of the file inside the parser
@@ -157,6 +156,9 @@ class Lexer:
                 self.advance()
             elif self.current_char == ')':
                 tokens.append(Token(T_RBRAC, pos_start = self.pos))
+                self.advance()
+            elif self.current_char == '^':
+                tokens.append(Token(T_POWER, pos_start = self.pos))
                 self.advance()
             else:  # If we cant find a complementary token for the input character, then we have to raise an error
                 pos_start = self.pos.copy()  # Makes a copy position object at the beginning of the error
@@ -268,7 +270,7 @@ class Parser:
     def parse(self):
         res = self.expr()
         if not res.error and self.current_token.type != T_EOF:  # If the final token type is not the end of file error, there was left over code to parse therefore there must've been a syntax error
-            return res.failure(InvalidSyntaxError(self.current_token.pos_start, self.current_token.pos_end, "Expected '+', '-', '*', or '/'"))
+            return res.failure(InvalidSyntaxError(self.current_token.pos_start, self.current_token.pos_end, "Expected a valid arithmetic operator!"))
         return res
 
 
@@ -300,7 +302,7 @@ class Parser:
         return result.failure(InvalidSyntaxError(token.pos_start, token.pos_end, "Expected int or float"))
 
     def term(self):  # A term is a factor multiplied/divided by another factor. See grammar.txt
-        return self.binary_op(self.factor, (T_MUL, T_DIV))
+        return self.binary_op(self.factor, (T_MUL, T_DIV, T_POWER))
 
     def expr(self):  # An expression is a term plus/minus another term.
         return self.binary_op(self.term, (T_PLUS, T_MINUS))
@@ -376,6 +378,10 @@ class Number:  # This class will be for storing numbers and then operating on th
                 return None, RunTimeError(other.pos_start, other.pos_end, "Division by 0!", self.context)
             return Number(self.value / other.value).set_context(self.context), None
 
+    def power_to(self, other):
+        if isinstance(other, Number):
+            return Number(pow(self.value, other.value)).set_context(self.context), None
+
     def __repr__(self):
         return str(self.value)
 
@@ -425,6 +431,8 @@ class Interpreter:  # Interpreter will traverse through the node "tree" and by l
             res, error = left.multiplied_by(right)
         elif node.op_token.type == T_DIV:
             res, error = left.divided_by(right)
+        elif node.op_token.type == T_POWER:
+            res, error = left.power_to(right)
 
         if error:
             return result.failure(error)
