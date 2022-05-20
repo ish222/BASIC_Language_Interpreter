@@ -6,3 +6,4 @@ while True:  # Infinite loop to read the raw input from the terminal window
 
     if error: print(error.message())
     else: print(result)
+    

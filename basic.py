@@ -1,4 +1,5 @@
 # Imports
+from re import M
 from statistics import median_high
 from string_with_arrows import *
 
@@ -35,6 +36,28 @@ class InvalidSyntaxError(Error):  # This is for errors in the parsing process fo
     def __init__(self, pos_start, pos_end, details):
         super().__init__(pos_start, pos_end, "Invalid syntax", details)
 
+class RunTimeError(Error):  # This is for errors picked up by the interpreter upon code execution
+    def __init__(self, pos_start, pos_end, details, context):
+        super().__init__(pos_start, pos_end, "Runtime error", details)
+        self.context = context
+
+    def message(self):
+        message = self.generate_traceback()
+        message += f"{self.error_name}: {self.details}\n"
+        message += "\n\n" + string_with_arrows(self.pos_start.file_text, self.pos_start, self.pos_end)  # Allows for arrow indicators in the error message for better readability
+        return message
+        
+    def generate_traceback(self):
+        message = ""
+        pos = self.pos_start
+        context = self.context
+
+        while context:  # Loops through the entire traceback to show the full origin and context of an error
+            message = f"   File {pos.file_name}, line {str(pos.line_num + 1)}, in {context.display_name}\n" + message
+            pos = context.parent_entry_pos
+            context = context.parent
+
+        return "Traceback (most recent call last):\n" + message
 
 
 # Position Class
@@ -301,75 +324,126 @@ class Parser:
         return result.success(left)
 
 
+# Runtime result class
+class RunTimeResult:  # This class will keep track of the current result and errors (if any)
+    def __init__(self):
+        self.value = None
+        self.error = None
+
+    def register(self, result):
+        if result.error: self.error = result.error
+        return result.value
+
+    def success(self, value):
+        self.value = value
+        return self
+
+    def failure(self, error):
+        self.error = error
+        return self
+
 # Number class
 class Number:  # This class will be for storing numbers and then operating on them with numbers
     def __init__(self, value):
         self.value = value
         self.set_position()  # This is to track the position of the number in case of a mathematical error e.g. division by 0
+        self.set_context()  # This is to track the context of the specific number node
 
     def set_position(self, pos_start=None, pos_end=None):
         self.pos_start = pos_start
         self.pos_end = pos_end
         return self
 
+    def set_context(self, context=None):
+        self.context = context
+        return self
+
     def added_to(self, other):
         if isinstance(other, Number):  # Checks if the types of the two objects to be added is the same
-            return Number(self.value + other.value)  # Created new number object with the operation of the function applied
+            return Number(self.value + other.value).set_context(self.context), None  # Created new number object with the operation of the function applied
 
     def subtracted_by(self, other):
         if isinstance(other, Number):
-            return Number(self.value - other.value)
+            return Number(self.value - other.value).set_context(self.context), None  # The second return is the error which for these operations is none
 
     def multiplied_by(self, other):
         if isinstance(other, Number):
-            return Number(self.value * other.value)
+            return Number(self.value * other.value).set_context(self.context), None
 
     def divided_by(self, other):
         if isinstance(other, Number):
-            return Number(self.value / other.value)
+            if other.value == 0:
+                return None, RunTimeError(other.pos_start, other.pos_end, "Division by 0!", self.context)
+            return Number(self.value / other.value).set_context(self.context), None
 
     def __repr__(self):
         return str(self.value)
 
+# Context class
+
+class Context:  # This is a class to track the current context of the program
+    def __init__(self, display_name, parent=None, parent_entry_pos=None):
+        """
+        string display_name  = Context name
+        string parent = Parent context name
+        string parent_entry_pos = Position in the code where the context changed
+        """
+        self.display_name = display_name
+        self.parent = parent
+        self.parent_entry_pos = parent_entry_pos
+
+
 # Interpreter class
 class Interpreter:  # Interpreter will traverse through the node "tree" and by looking at the node types, it will determine the code to be executed
-    def visit(self, node):
+    def visit(self, node, context):
         """
         This will process the node provided and visit all the child nodes. There will be a different visit method for each node type.
         """
         method_name = f"visit_{type(node).__name__}"  # This will create a string with the name of the node type, e.g. visit_NumberNode.
         method = getattr(self, method_name, self.no_visit_method)
-        return method(node)
+        return method(node, context)
 
-    def no_visit_method(self, node):
+    def no_visit_method(self, node, context):
         raise Exception(f"No visit_{type(node).__name__} method defined")
 
-    def visit_NumberNode(self, node):
-        return Number(node.tok.value).set_position(node.pos_start, node.pos_end)
+    def visit_NumberNode(self, node, context):
+        return RunTimeResult().success(Number(node.tok.value).set_context(context).set_position(node.pos_start, node.pos_end))
 
-    def visit_BinaryOpNode(self, node):
-        left = self.visit(node.left_node)  # We need to visit the left and right child nodes of the binary operator node
-        right = self.visit(node.right_node)
+    def visit_BinaryOpNode(self, node, context):
+        result = RunTimeResult()
+        left = result.register(self.visit(node.left_node, context))  # We need to visit the left and right child nodes of the binary operator node
+        if result.error: return result
+        right = result.register(self.visit(node.right_node, context))
+        if result.error: return result
 
         # Now we need to check the operator type
         if node.op_token.type == T_PLUS:
-            result = left.added_to(right)
+            res, error = left.added_to(right)
         elif node.op_token.type == T_MINUS:
-            result = left.subtracted_by(right)
+            res, error = left.subtracted_by(right)
         elif node.op_token.type == T_MUL:
-            result = left.multiplied_by(right)
+            res, error = left.multiplied_by(right)
         elif node.op_token.type == T_DIV:
-            result = left.divided_by(right)
+            res, error = left.divided_by(right)
 
-        return result.set_position(node.pos_start, node.pos_end)
+        if error:
+            return result.failure(error)
+        else:
+            return result.success(res.set_position(node.pos_start, node.pos_end))
 
-    def visit_UnaryOpNode(self, node):
-        number = self.visit(node.node)
+    def visit_UnaryOpNode(self, node, context):
+        result = RunTimeResult()
+        number = result.register(self.visit(node.node, context))
+        if result.error: return result
 
+        error = None
         if node.op_token.type == T_MINUS:
-            number = number.multiplied_by(Number(-1))  # Multiplies a number by -1 for the case of a single minus
+            number, error = number.multiplied_by(Number(-1))  # Multiplies a number by -1 for the case of a single minus
 
-        return number.set_position(node.pos_start, node.pos_end)
+        if error:
+            return result.failure(error)
+        else:
+            return result.success(number.set_position(node.pos_start, node.pos_end))
 
 
 # Run functions
@@ -385,6 +459,7 @@ def run(file_name, text):  # This is going to get the input text and return a li
 
     # Running the program by creating an interpreter instance
     interpreter = Interpreter()
-    result = interpreter.visit(ast.node)
+    context = Context("<program>")  # Root context of the whole program
+    result = interpreter.visit(ast.node, context)
 
-    return result, None
+    return result.value, result.error
