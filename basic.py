@@ -1,5 +1,4 @@
 # Imports
-from cgitb import reset
 from string_with_arrows import *
 import string
 
@@ -99,7 +98,7 @@ T_EQ = 'EQ'
 T_EOF = 'EOF'  # Allows us to detect if we've reached the end of the file inside the parser
 
 KEYWORDS = [
-    "VAR", "INT", "FLOAT", "CHAR", "BOOL", "STRING"
+    "VAR"
 ]
 
 
@@ -276,20 +275,23 @@ class ParseResult:
     def __init__(self):
         self.error = None  # This class will keep track of an error (if any exists) and the node
         self.node = None
+        self.advance_count = 0  # This will keep track of how many times we have advanced in this particular function which has this parse_result
+
+    def register_advancement(self):
+        self.advance_count += 1
 
     def register(self, result):
-        if isinstance(result, ParseResult):
-            if result.error: self.error = result.error
-            return result.node
-
-        return result
+        self.advance_count += result.advance_count
+        if result.error: self.error = result.error
+        return result.node
 
     def success(self, node):
         self.node = node
         return self
 
     def failure(self, error):
-        self.error = error
+        if not self.error or self.advance_count == 0:
+            self.error = error
         return self
 
 
@@ -321,30 +323,35 @@ class Parser:
         token = self.current_token
 
         if token.type in (T_PLUS, T_MINUS):  # Checks if current token is an integer or a float
-            result.register(self.advance())
+            result.register_advancement()
+            self.advance()
             factor = result.register(self.factor())
             if result.error: return result
             return result.success(UnaryOpNode(token, factor))
 
         elif token.type == T_IDENTIFIER: 
-            result.register(self.advance())
+            result.register_advancement()
+            self.advance()
             return result.success(VarAccessNode(token))
         
         elif token.type in (T_INT, T_FLOAT):  # If token is of type integer or float, advance and return a number node of the token
-            result.register(self.advance())
+            result.register_advancement()
+            self.advance()
             return result.success(NumberNode(token))
 
         elif token.type == T_LBRAC:
-            result.register(self.advance())
+            result.register_advancement()
+            self.advance()
             expr = result.register(self.expr())
             if result.error: return result
             if self.current_token.type == T_RBRAC:
-                result.register(self.advance())
+                result.register_advancement()
+                self.advance()
                 return result.success(expr)
             else:  # If right bracket is not found
                 return result.failure(InvalidSyntaxError(self.current_token.pos_start, self.current_token.pos_end, "Expected ')'"))
 
-        return result.failure(InvalidSyntaxError(token.pos_start, token.pos_end, "Invalid syntax"))
+        return result.failure(InvalidSyntaxError(token.pos_start, token.pos_end, "Expected int, float, identifier, '+', '-' or '('"))
 
     def term(self):  # A term is a factor multiplied/divided by another factor. See grammar.txt
         return self.binary_op(self.factor, (T_MUL, T_DIV, T_POWER))
@@ -352,20 +359,25 @@ class Parser:
     def expr(self):  # An expression is a term plus/minus another term.
         result = ParseResult()
         if self.current_token.matches(T_KEYWORD, 'VAR'):
-            result.register(self.advance())
+            result.register_advancement()
+            self.advance()
             if self.current_token.type != T_IDENTIFIER:
                 return result.failure(InvalidSyntaxError(self.current_token.pos_start, self.current_token.pos_end, "Expected identifier"))
             var_name = self.current_token
-            result.register(self.advance())
+            result.register_advancement()
+            self.advance()
 
             if self.current_token.type != T_EQ:
                 return result.failure(InvalidSyntaxError(self.current_token.pos_start, self.current_token.pos_end, "Expected '='"))
-            result.register(self.advance())
+            result.register_advancement()
+            self.advance()
             expr = result.register(self.expr())
             if result.error: return result
             return result.success(VarAssignNode(var_name, expr))
 
-        return self.binary_op(self.term, (T_PLUS, T_MINUS))
+        node =  result.register(self.binary_op(self.term, (T_PLUS, T_MINUS)))
+        if result.error: return result.failure(InvalidSyntaxError(self.current_token.pos_start, self.current_token.pos_end, "Expected 'VAR', int, float, identifier, '+', '-' or '('"))
+        return result.success(node)
 
     def binary_op(self, func, ops):
         """
@@ -378,7 +390,8 @@ class Parser:
 
         while self.current_token.type in ops:
             op_token = self.current_token
-            result.register(self.advance())
+            result.register_advancement()
+            self.advance()
             right = result.register(func())
             if result.error: return result
             left = BinaryOpNode(left, op_token, right)
@@ -442,6 +455,12 @@ class Number:  # This class will be for storing numbers and then operating on th
         if isinstance(other, Number):
             return Number(pow(self.value, other.value)).set_context(self.context), None
 
+    def copy(self):
+        copy = Number(self.value)
+        copy.set_position(self.pos_start, self.pos_end)
+        copy.set_context(self.context)
+        return copy
+
     def __repr__(self):
         return str(self.value)
 
@@ -460,7 +479,7 @@ class Context:  # This is a class to track the current context of the program
 
 
 # Symbol table class
-class SymbolTable: # This is a class to track the variable names and their values
+class SymbolTable:  # This is a class to track the variable names and their values
     def __init__(self):
         self.symbols = {}
         self.parent = None  # Symbol table for global variables
@@ -501,6 +520,8 @@ class Interpreter:  # Interpreter will traverse through the node "tree" and by l
         value = context.symbol_table.get(var_name)
 
         if not value: return result.failure(RunTimeError(node.pos_start, node.pos_end, f"'{var_name}' is not defined!", context))
+
+        value = value.copy().set_position(node.pos_start, node.pos_end)
         return result.success(value)
 
     def visit_VarAssignNode(self, node, context):
